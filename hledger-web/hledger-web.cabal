@@ -93,10 +93,11 @@ library
                 RecordWildCards
                 TemplateHaskell
                 TypeFamilies
+                DeriveDataTypeable
+                FlexibleContexts
+                GADTs
                 -- seem to not be needed at present:
-                -- GADTs
                 -- GeneralizedNewtypeDeriving
-                -- FlexibleContexts
                 -- EmptyDataDecls
                 -- NoMonomorphismRestriction
 
@@ -139,6 +140,9 @@ library
                    , conduit-extra
                    , old-locale
                    , parsec
+                   , persistent                    >= 1.3        && < 1.4
+                   , persistent-sqlite             >= 1.3        && < 1.4
+                   , persistent-template           >= 1.3        && < 1.4
                    , regexpr              >= 0.5.1
                    , safe                 >= 0.2
 -- http://www.yesodweb.com/blog/2014/04/consolidation-progress
@@ -162,9 +166,13 @@ library
                    , warp                 >= 1.3 && < 3.1
                    , yaml
                    , yesod                >= 1.2 && < 1.3
+                   , yesod-auth                    >= 1.3        && < 1.4
                    , yesod-core
                    , yesod-static
                    , json
+                   , monad-logger                  >= 0.3        && < 0.4
+                   , fast-logger                   >= 2.1.4      && < 2.2
+                   , wai-logger                    >= 2.1        && < 2.2
                    -- required by extra ghci utilities:
                    -- , fsnotify
                    -- , hsdev
@@ -203,6 +211,13 @@ executable         hledger-web
                 RecordWildCards
                 TemplateHaskell
                 TypeFamilies
+                DeriveDataTypeable
+                FlexibleContexts
+                GADTs
+                -- seem to not be needed at present:
+                -- GeneralizedNewtypeDeriving
+                -- EmptyDataDecls
+                -- NoMonomorphismRestriction
 
     hs-source-dirs:  . app
     main-is:         main.hs
@@ -244,6 +259,9 @@ executable         hledger-web
                    , conduit-extra
                    , old-locale
                    , parsec
+                   , persistent                    >= 1.3        && < 1.4
+                   , persistent-sqlite             >= 1.3        && < 1.4
+                   , persistent-template           >= 1.3        && < 1.4
                    , regexpr              >= 0.5.1
                    , safe                 >= 0.2
                    , hamlet
@@ -259,9 +277,13 @@ executable         hledger-web
                    , warp                 >= 1.3 && < 3.1
                    , yaml
                    , yesod                >= 1.2 && < 1.3
+                   , yesod-auth                    >= 1.3        && < 1.4
                    , yesod-core
                    , yesod-static
                    , json
+                   , monad-logger                  >= 0.3        && < 0.4
+                   , fast-logger                   >= 2.1.4      && < 2.2
+                   , wai-logger                    >= 2.1        && < 2.2
                    -- required by extra ghci utilities:
                    -- , fsnotify
                    -- , hsdev
@@ -287,3 +309,8 @@ test-suite test
                    , hspec
                    , yesod                >= 1.2 && < 1.3
                    , yesod-test           >= 1.2 && < 1.3
+                   , persistent
+                   , persistent-sqlite
+                   , monad-logger
+                   -- , resourcet
+                   -- , transformers

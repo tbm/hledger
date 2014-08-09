@@ -10,17 +10,24 @@ module Foundation where
 import Prelude
 import Control.Applicative ((<$>))
 import Data.IORef
+import qualified Database.Persist
+import Database.Persist.Sql (SqlPersistT)
 import Yesod
+import Yesod.Auth
+import Yesod.Auth.BrowserId
+import Yesod.Auth.GoogleEmail
+import Yesod.Core.Types (Logger)
 import Yesod.Static
 import Yesod.Default.Config
 #ifndef DEVELOPMENT
 import Yesod.Default.Util (addStaticContentExternal)
 #endif
 import Network.HTTP.Conduit (Manager)
+import Model
 -- import qualified Settings
 import Settings.Development (development)
 import Settings.StaticFiles
-import Settings (staticRoot, widgetFile, Extra (..))
+import Settings
 #ifndef DEVELOPMENT
 import Settings (staticDir)
 import Text.Jasmine (minifym)
@@ -33,7 +40,7 @@ import Hledger.Data.Types
 -- import Hledger.Web.Settings.StaticFiles
 
 -- for addform
-import Data.List
+import Data.List hiding (insert)
 import Data.Maybe
 import Data.Text as Text (Text,pack,unpack)
 import Data.Time.Calendar
@@ -57,7 +64,10 @@ import Hledger.Cli hiding (version)
 data App = App
     { settings :: AppConfig DefaultEnv Extra
     , getStatic :: Static -- ^ Settings for static file serving.
+    , connPool :: Database.Persist.PersistConfigPool Settings.PersistConf -- ^ Database connection pool.
     , httpManager :: Manager
+    , persistConfig :: Settings.PersistConf
+    , appLogger :: Logger
       --
     , appOpts    :: WebOpts
     , appJournal :: IORef Journal
@@ -150,6 +160,9 @@ instance Yesod App where
         Just $ uncurry (joinPath y (Settings.staticRoot $ settings y)) $ renderRoute s
     urlRenderOverride _ _ = Nothing
 
+    -- The page to be redirected to when authentication is required.
+    authRoute _ = Just $ AuthR LoginR
+
 #ifndef DEVELOPMENT
     -- This function creates static content files in the static folder
     -- and names them based on a hash of their content. This allows
@@ -165,6 +178,36 @@ instance Yesod App where
     -- in development, and warnings and errors in production.
     shouldLog _ _source level =
         development || level == LevelWarn || level == LevelError
+
+-- How to run database actions.
+instance YesodPersist App where
+    type YesodPersistBackend App = SqlPersistT
+    runDB = defaultRunDB persistConfig connPool
+instance YesodPersistRunner App where
+    getDBRunner = defaultGetDBRunner connPool
+
+instance YesodAuth App where
+    type AuthId App = UserId
+
+    -- Where to send a user after successful login
+    loginDest _ = RootR
+    -- Where to send a user after logout
+    logoutDest _ = RootR
+
+    getAuthId creds = runDB $ do
+        x <- getBy $ UniqueUser $ credsIdent creds
+        case x of
+            Just (Entity uid _) -> return $ Just uid
+            Nothing -> do
+                fmap Just $ insert User
+                    { userIdent = credsIdent creds
+                    , userPassword = Nothing
+                    }
+
+    -- You can add other plugins like BrowserID, email or OAuth here
+    authPlugins _ = [authBrowserId def, authGoogleEmail]
+
+    authHttpManager = httpManager
 
 -- This instance is required to use forms. You can modify renderMessage to
 -- achieve customized and internationalized form validation messages.

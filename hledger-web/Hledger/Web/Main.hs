@@ -11,6 +11,7 @@ where
 
 -- yesod scaffold imports
 import Yesod.Default.Config --(fromArgs)
+import Yesod.Default.Main   (defaultMainLog)
 -- import Yesod.Default.Main   (defaultMain)
 import Settings            --  (parseExtra)
 import Application          (makeApplication)
@@ -61,19 +62,20 @@ web opts j = do
       u = base_url_ opts
       staticRoot' = pack <$> static_root_ opts
   _ <- printf "Starting web app on port %d with base url %s\n" p u
-  app <- makeApplication opts j' AppConfig{appEnv = Development
-                                          ,appPort = p
-                                          ,appRoot = pack u
-                                          ,appHost = fromString "*4"
-                                          ,appExtra = Extra "" Nothing staticRoot'
-                                          }
-  if server_ opts
-   then do
-    putStrLn "Press ctrl-c to quit"
-    hFlush stdout
-    runSettings (setPort p defaultSettings) app
-   else do
-    putStrLn "Starting web browser if possible"
-    putStrLn "Web app will auto-exit after a few minutes with no browsers (or press ctrl-c)"
-    hFlush stdout
-    runUrlPort p "" app
+  defaultMainLog (fromArgs parseExtra) (makeApplication opts j')
+  -- app <- makeApplication opts j' AppConfig{appEnv = Development
+  --                                         ,appPort = p
+  --                                         ,appRoot = pack u
+  --                                         ,appHost = fromString "*4"
+  --                                         ,appExtra = Extra "" Nothing staticRoot'
+  --                                         }
+  -- if server_ opts
+  --  then do
+  --   putStrLn "Press ctrl-c to quit"
+  --   hFlush stdout
+  --   runSettings (setPort p defaultSettings) app
+  --  else do
+  --   putStrLn "Starting web browser if possible"
+  --   putStrLn "Web app will auto-exit after a few minutes with no browsers (or press ctrl-c)"
+  --   hFlush stdout
+  --   runUrlPort p "" app
