@@ -28,9 +28,10 @@ import Control.Monad.Except
 -- import Test.HUnit
 import Data.Char (toLower, isDigit, isSpace)
 import Data.List.Compat
+import Data.List.Split (wordsBy)
 import Data.Maybe
 import Data.Ord
-import Data.Time.Calendar (Day)
+import Data.Time.Calendar
 #if MIN_VERSION_time(1,5,0)
 import Data.Time.Format (parseTimeM, defaultTimeLocale)
 #else
@@ -51,7 +52,7 @@ import Text.Printf (hPrintf,printf)
 import Hledger.Data
 import Hledger.Utils.UTF8IOCompat (getContents)
 import Hledger.Utils
-import Hledger.Read.JournalReader (amountp, statusp, genericSourcePos)
+import Hledger.Read.JournalReader (amountp, genericSourcePos, statusp, transactionp)
 
 
 reader :: Reader
@@ -227,7 +228,7 @@ Grammar for the CSV conversion rules, more or less:
 
 RULES: RULE*
 
-RULE: ( FIELD-LIST | FIELD-ASSIGNMENT | CONDITIONAL-BLOCK | SKIP | DATE-FORMAT | COMMENT | BLANK ) NEWLINE
+RULE: ( FIELD-LIST | FIELD-ASSIGNMENT | CONDITIONAL-BLOCK | TRANSACTION-TEMPLATE | SKIP | DATE-FORMAT | COMMENT | BLANK ) NEWLINE
 
 FIELD-LIST: fields SPACE FIELD-NAME ( SPACE? , SPACE? FIELD-NAME )*
 
@@ -254,6 +255,8 @@ CSV-FIELD: ( FIELD-NAME | FIELD-NUMBER ) (corresponding to a CSV field)
 FIELD-NUMBER: DIGIT+
 
 CONDITIONAL-BLOCK: if ( FIELD-MATCHER NEWLINE )+ INDENTED-BLOCK
+
+TRANSACTION-TEMPLATE: a journal transaction
 
 FIELD-MATCHER: ( CSV-FIELD-NAME SPACE? )? ( MATCHOP SPACE? )? PATTERNS
 
@@ -293,7 +296,8 @@ data CsvRules = CsvRules {
   rdirectives        :: [(DirectiveName,String)],
   rcsvfieldindexes   :: [(CsvFieldName, CsvFieldIndex)],
   rassignments       :: [(JournalFieldName, FieldTemplate)],
-  rconditionalblocks :: [ConditionalBlock]
+  rconditionalblocks :: [ConditionalBlock],
+  rtransactiontemplates :: [TransactionTemplate]
 } deriving (Show, Eq)
 
 type DirectiveName    = String
@@ -301,6 +305,7 @@ type CsvFieldName     = String
 type CsvFieldIndex    = Int
 type JournalFieldName = String
 type FieldTemplate    = String
+type TransactionTemplate = Transaction
 type ConditionalBlock = ([RecordMatcher], [(JournalFieldName, FieldTemplate)]) -- block matches if all RecordMatchers match
 type RecordMatcher    = [RegexpPattern] -- match if any regexps match any of the csv fields
 -- type FieldMatcher     = (CsvFieldName, [RegexpPattern]) -- match if any regexps match this csv field
@@ -311,7 +316,8 @@ rules = CsvRules {
   rdirectives=[],
   rcsvfieldindexes=[],
   rassignments=[],
-  rconditionalblocks=[]
+  rconditionalblocks=[],
+  rtransactiontemplates=[]
 }
 
 addDirective :: (DirectiveName, String) -> CsvRules -> CsvRules
@@ -336,6 +342,9 @@ addAssignmentsFromList fs r = foldl' maybeAddAssignment r journalfieldnames
 addConditionalBlock :: ConditionalBlock -> CsvRules -> CsvRules
 addConditionalBlock b r = r{rconditionalblocks=b:rconditionalblocks r}
 
+addTransactionTemplate :: Transaction -> CsvRules -> CsvRules
+addTransactionTemplate t r = r{rtransactiontemplates=t:rtransactiontemplates r}
+
 getDirective :: DirectiveName -> CsvRules -> Maybe FieldTemplate
 getDirective directivename = lookup directivename . rdirectives
 
@@ -343,7 +352,7 @@ getDirective directivename = lookup directivename . rdirectives
 parseRulesFile :: FilePath -> ExceptT String IO CsvRules
 parseRulesFile f = do
   s <- liftIO $ (readFile' f >>= expandIncludes (takeDirectory f))
-  let rules = parseCsvRules f s
+  rules <- liftIO $ parseCsvRules f s
   case rules of
     Left e -> ExceptT $ return $ Left $ show e
     Right r -> do
@@ -368,10 +377,10 @@ expandIncludes basedir content = do
       return $ unlines [unlines ls, included, unlines ls']
     ls' -> return $ unlines $ ls ++ ls'   -- should never get here
 
-parseCsvRules :: FilePath -> String -> Either ParseError CsvRules
+-- MonadIO allows this to run the transaction parser.
+parseCsvRules :: MonadIO m => FilePath -> String -> m (Either ParseError CsvRules)
 -- parseCsvRules rulesfile s = runParser csvrulesfile nullrules{baseAccount=takeBaseName rulesfile} rulesfile s
-parseCsvRules rulesfile s =
-  runParser rulesp rules rulesfile s
+parseCsvRules rulesfile s = runParserT rulesp rules rulesfile s
 
 -- | Return the validated rules, or an error.
 validateRules :: CsvRules -> ExceptT String IO CsvRules
@@ -389,7 +398,7 @@ validateRules rules = do
 
 -- parsers
 
-rulesp :: Monad m => ParsecT [Char] CsvRules m CsvRules
+rulesp :: MonadIO m => ParsecT [Char] CsvRules m CsvRules
 rulesp = do
   many $ choice'
     [blankorcommentlinep                                                    <?> "blank or comment line"
@@ -397,12 +406,14 @@ rulesp = do
     ,(fieldnamelistp    >>= modifyState . setIndexesAndAssignmentsFromList) <?> "field name list"
     ,(fieldassignmentp  >>= modifyState . addAssignment)                    <?> "field assignment"
     ,(conditionalblockp >>= modifyState . addConditionalBlock)              <?> "conditional block"
+    ,(transactiontemplatep >>= modifyState . addTransactionTemplate)           <?> "transaction template"
     ]
   eof
   r <- getState
   return r{rdirectives=reverse $ rdirectives r
           ,rassignments=reverse $ rassignments r
           ,rconditionalblocks=reverse $ rconditionalblocks r
+          ,rtransactiontemplates=reverse $ rtransactiontemplates r
           }
 
 blankorcommentlinep :: Monad m => ParsecT [Char] CsvRules m ()
@@ -566,6 +577,47 @@ regexp = do
 --   let r = "(" ++ intercalate "|" ps ++ ")"
 --   return (f,r)
 --   <?> "field matcher"
+
+transactiontemplatep :: MonadIO m => ParsecT [Char] CsvRules m TransactionTemplate
+transactiontemplatep = do
+  -- the journal reader's transaction parser has a different type, must run it separately
+  -- 1. a quick parse to get the transaction entry
+  datestr <- datep'
+  restoftxnline <- restofline
+  postinglines <- many (do a <- many1 spacenonewline
+                           b <- nonspace
+                           c <- restofline
+                           return $ a ++ [b] ++ c)
+  let txnstr = unlines $ (datestr++restoftxnline):postinglines
+  -- 2. run the real transaction parser on that
+  -- pos <- getPosition
+  let txnparser :: ExceptT String IO Transaction = do
+        -- setPosition pos -- preserve position in error messages
+        et <- runParserT transactionp nullctx "" txnstr
+        either (throwError.show) return et
+  et <- liftIO $ runExceptT $ txnparser
+  case et of
+    Left err -> fail err
+    Right t -> return t
+
+-- datep without the JournalContext dependency
+-- XXX duplication
+datep' :: Monad m => ParsecT [Char] u m String
+datep' = do
+  datestr <- do
+    c <- digit
+    cs <- many $ choice' [digit, datesepchar]
+    return $ c:cs
+  let sepchars = nub $ sort $ filter (`elem` datesepchars) datestr
+  when (length sepchars /= 1) $ fail $ "bad date, different separators used: " ++ datestr
+  let dateparts = wordsBy (`elem` datesepchars) datestr
+  -- currentyear <- getYear
+  [y,m,d] <- case dateparts of
+    [y,m,d] -> return [y,m,d]
+    _       -> fail $ "bad date: " ++ datestr
+  let maybedate = fromGregorianValid (read y) (read m) (read d)
+  when (isNothing maybedate) $ fail $ "bad date: " ++ datestr
+  return datestr
 
 --------------------------------------------------------------------------------
 -- Converting CSV records to journal transactions
@@ -777,17 +829,20 @@ test_parser =  [
    "convert rules parsing: empty file" ~: do
      -- let assertMixedAmountParse parseresult mixedamount =
      --         (either (const "parse error") showMixedAmountDebug parseresult) ~?= (showMixedAmountDebug mixedamount)
-    assertParseEqual (parseCsvRules "unknown" "") rules
+    r <- parseCsvRules "unknown" ""
+    assertParseEqual r rules
 
   -- ,"convert rules parsing: accountrule" ~: do
   --    assertParseEqual (parseWithCtx rules accountrule "A\na\n") -- leading blank line required
   --                ([("A",Nothing)], "a")
 
   ,"convert rules parsing: trailing comments" ~: do
-     assertParse (parseWithCtx rules rulesp "skip\n# \n#\n")
+     r <- (parseWithCtx rules rulesp "skip\n# \n#\n")
+     assertParse r
 
   ,"convert rules parsing: trailing blank lines" ~: do
-     assertParse (parseWithCtx rules rulesp "skip\n\n  \n")
+     r <- (parseWithCtx rules rulesp "skip\n\n  \n")
+     assertParse r
 
   -- not supported
   -- ,"convert rules parsing: no final newline" ~: do

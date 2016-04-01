@@ -39,6 +39,7 @@ module Hledger.Read.JournalReader (
   mamountp',
   numberp,
   statusp,
+  transactionp,
   emptyorcommentlinep,
   followingcommentp,
   accountaliasp
