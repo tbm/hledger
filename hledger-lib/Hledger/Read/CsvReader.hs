@@ -27,6 +27,7 @@ import Control.Monad
 import Control.Monad.Except
 -- import Test.HUnit
 import Data.Char (toLower, isDigit, isSpace)
+import Data.Either
 import Data.List.Compat
 import Data.List.Split (wordsBy)
 import Data.Maybe
@@ -295,7 +296,7 @@ convert a particular CSV data file into meaningful journal transactions.
 data CsvRules = CsvRules {
   rdirectives        :: [(DirectiveName,String)],
   rcsvfieldindexes   :: [(CsvFieldName, CsvFieldIndex)],
-  rassignments       :: [(JournalFieldName, FieldTemplate)],
+  rassignments       :: [FieldAssignment],
   rconditionalblocks :: [ConditionalBlock],
   rtransactiontemplates :: [TransactionTemplate]
 } deriving (Show, Eq)
@@ -305,8 +306,9 @@ type CsvFieldName     = String
 type CsvFieldIndex    = Int
 type JournalFieldName = String
 type FieldTemplate    = String
+type FieldAssignment  = (JournalFieldName, FieldTemplate)
 type TransactionTemplate = Transaction
-type ConditionalBlock = ([RecordMatcher], [(JournalFieldName, FieldTemplate)]) -- block matches if all RecordMatchers match
+type ConditionalBlock = ([RecordMatcher], Either [FieldAssignment] TransactionTemplate) -- block matches if all RecordMatchers match
 type RecordMatcher    = [RegexpPattern] -- match if any regexps match any of the csv fields
 -- type FieldMatcher     = (CsvFieldName, [RegexpPattern]) -- match if any regexps match this csv field
 type DateFormat       = String
@@ -406,7 +408,7 @@ rulesp = do
     ,(fieldnamelistp    >>= modifyState . setIndexesAndAssignmentsFromList) <?> "field name list"
     ,(fieldassignmentp  >>= modifyState . addAssignment)                    <?> "field assignment"
     ,(conditionalblockp >>= modifyState . addConditionalBlock)              <?> "conditional block"
-    ,(transactiontemplatep >>= modifyState . addTransactionTemplate)           <?> "transaction template"
+    ,(transactiontemplatep >>= modifyState . addTransactionTemplate)        <?> "transaction template"
     ]
   eof
   r <- getState
@@ -416,19 +418,19 @@ rulesp = do
           ,rtransactiontemplates=reverse $ rtransactiontemplates r
           }
 
-blankorcommentlinep :: Monad m => ParsecT [Char] CsvRules m ()
+blankorcommentlinep :: MonadIO m => ParsecT [Char] CsvRules m ()
 blankorcommentlinep = pdbg 3 "trying blankorcommentlinep" >> choice' [blanklinep, commentlinep]
 
-blanklinep :: Monad m => ParsecT [Char] CsvRules m ()
+blanklinep :: MonadIO m => ParsecT [Char] CsvRules m ()
 blanklinep = many spacenonewline >> newline >> return () <?> "blank line"
 
-commentlinep :: Monad m => ParsecT [Char] CsvRules m ()
+commentlinep :: MonadIO m => ParsecT [Char] CsvRules m ()
 commentlinep = many spacenonewline >> commentcharp >> restofline >> return () <?> "comment line"
 
-commentcharp :: Monad m => ParsecT [Char] CsvRules m Char
+commentcharp :: MonadIO m => ParsecT [Char] CsvRules m Char
 commentcharp = oneOf ";#*"
 
-directivep :: Monad m => ParsecT [Char] CsvRules m (DirectiveName, String)
+directivep :: MonadIO m => ParsecT [Char] CsvRules m (DirectiveName, String)
 directivep = do
   pdbg 3 "trying directive"
   d <- choice' $ map string directives
@@ -447,10 +449,10 @@ directives =
    -- ,"base-currency"
   ]
 
-directivevalp :: Monad m => ParsecT [Char] CsvRules m [Char]
+directivevalp :: MonadIO m => ParsecT [Char] CsvRules m [Char]
 directivevalp = anyChar `manyTill` eolof
 
-fieldnamelistp :: Monad m => ParsecT [Char] CsvRules m [CsvFieldName]
+fieldnamelistp :: MonadIO m => ParsecT [Char] CsvRules m [CsvFieldName]
 fieldnamelistp = (do
   pdbg 3 "trying fieldnamelist"
   string "fields"
@@ -463,20 +465,20 @@ fieldnamelistp = (do
   return $ map (map toLower) $ f:fs
   ) <?> "field name list"
 
-fieldnamep :: Monad m => ParsecT [Char] CsvRules m [Char]
+fieldnamep :: MonadIO m => ParsecT [Char] CsvRules m [Char]
 fieldnamep = quotedfieldnamep <|> barefieldnamep
 
-quotedfieldnamep :: Monad m => ParsecT [Char] CsvRules m [Char]
+quotedfieldnamep :: MonadIO m => ParsecT [Char] CsvRules m [Char]
 quotedfieldnamep = do
   char '"'
   f <- many1 $ noneOf "\"\n:;#~"
   char '"'
   return f
 
-barefieldnamep :: Monad m => ParsecT [Char] CsvRules m [Char]
+barefieldnamep :: MonadIO m => ParsecT [Char] CsvRules m [Char]
 barefieldnamep = many1 $ noneOf " \t\n,;#~"
 
-fieldassignmentp :: Monad m => ParsecT [Char] CsvRules m (JournalFieldName, FieldTemplate)
+fieldassignmentp :: MonadIO m => ParsecT [Char] CsvRules m (JournalFieldName, FieldTemplate)
 fieldassignmentp = do
   pdbg 3 "trying fieldassignment"
   f <- journalfieldnamep
@@ -485,7 +487,7 @@ fieldassignmentp = do
   return (f,v)
   <?> "field assignment"
 
-journalfieldnamep :: Monad m => ParsecT [Char] CsvRules m [Char]
+journalfieldnamep :: MonadIO m => ParsecT [Char] CsvRules m [Char]
 journalfieldnamep = pdbg 2 "trying journalfieldnamep" >> choice' (map string journalfieldnames)
 
 journalfieldnames =
@@ -505,7 +507,7 @@ journalfieldnames =
   ,"comment"
   ]
 
-assignmentseparatorp :: Monad m => ParsecT [Char] CsvRules m ()
+assignmentseparatorp :: MonadIO m => ParsecT [Char] CsvRules m ()
 assignmentseparatorp = do
   pdbg 3 "trying assignmentseparatorp"
   choice [
@@ -516,23 +518,24 @@ assignmentseparatorp = do
   _ <- many spacenonewline
   return ()
 
-fieldvalp :: Monad m => ParsecT [Char] CsvRules m [Char]
+fieldvalp :: MonadIO m => ParsecT [Char] CsvRules m [Char]
 fieldvalp = do
   pdbg 2 "trying fieldval"
   anyChar `manyTill` eolof
 
-conditionalblockp :: Monad m => ParsecT [Char] CsvRules m ConditionalBlock
+conditionalblockp :: MonadIO m => ParsecT [Char] CsvRules m ConditionalBlock
 conditionalblockp = do
   pdbg 3 "trying conditionalblockp"
   string "if" >> many spacenonewline >> optional newline
   ms <- many1 recordmatcherp
-  as <- many (many1 spacenonewline >> fieldassignmentp)
-  when (null as) $
-    fail "start of conditional block found, but no assignment rules afterward\n(assignment rules in a conditional block should be indented)\n"
-  return (ms, as)
+  eats <- (many1 spacenonewline >> Right <$> transactiontemplatep)
+          <|> (Left <$> many (many1 spacenonewline >> fieldassignmentp))
+  when (null eats) $
+    fail "start of conditional block found, but no indented field assignments or transaction templates afterward\n"
+  return (ms, eats)
   <?> "conditional block"
 
-recordmatcherp :: Monad m => ParsecT [Char] CsvRules m [[Char]]
+recordmatcherp :: MonadIO m => ParsecT [Char] CsvRules m [[Char]]
 recordmatcherp = do
   pdbg 2 "trying recordmatcherp"
   -- pos <- currentPos
@@ -543,7 +546,7 @@ recordmatcherp = do
   return ps
   <?> "record matcher"
 
-matchoperatorp :: Monad m => ParsecT [Char] CsvRules m [Char]
+matchoperatorp :: MonadIO m => ParsecT [Char] CsvRules m [Char]
 matchoperatorp = choice' $ map string
   ["~"
   -- ,"!~"
@@ -551,13 +554,13 @@ matchoperatorp = choice' $ map string
   -- ,"!="
   ]
 
-patternsp :: Monad m => ParsecT [Char] CsvRules m [[Char]]
+patternsp :: MonadIO m => ParsecT [Char] CsvRules m [[Char]]
 patternsp = do
   pdbg 3 "trying patternsp"
   ps <- many regexp
   return ps
 
-regexp :: Monad m => ParsecT [Char] CsvRules m [Char]
+regexp :: MonadIO m => ParsecT [Char] CsvRules m [Char]
 regexp = do
   pdbg 3 "trying regexp"
   notFollowedBy matchoperatorp
@@ -602,7 +605,7 @@ transactiontemplatep = do
 
 -- datep without the JournalContext dependency
 -- XXX duplication
-datep' :: Monad m => ParsecT [Char] u m String
+datep' :: MonadIO m => ParsecT [Char] u m String
 datep' = do
   datestr <- do
     c <- digit
@@ -739,19 +742,26 @@ showRecord :: CsvRecord -> String
 showRecord r = "the CSV record is:       "++intercalate ", " (map show r)
 
 -- | Given the conversion rules, a CSV record and a journal entry field name, find
--- the template value ultimately assigned to this field, either at top
--- level or in a matching conditional block.  Conditional blocks'
--- patterns are matched against an approximation of the original CSV
--- record: all the field values with commas intercalated.
+-- the template value ultimately assigned to this field by a field
+-- assignment, which may be either at top level or in a matching
+-- conditional block. Transaction templates are not considered.
+-- Conditional blocks' patterns are matched against an approximation
+-- of the original CSV record: all the field values with commas
+-- intercalated.
 getEffectiveAssignment :: CsvRules -> CsvRecord -> JournalFieldName -> Maybe FieldTemplate
 getEffectiveAssignment rules record f = lastMay $ assignmentsFor f
   where
-    assignmentsFor f = map snd $ filter ((==f).fst) $ toplevelassignments ++ conditionalassignments
+    assignmentsFor f = map snd $ filter ((==f).fst) $ toplevelassignments ++ conditionalassignments :: [FieldTemplate]
       where
-        toplevelassignments    = rassignments rules
-        conditionalassignments = concatMap snd $ filter blockMatches $ blocksAssigning f
+        toplevelassignments    = rassignments rules :: [FieldAssignment]
+        conditionalassignments = concat $ lefts $ map snd c1 :: [FieldAssignment]
+        c1 = filter blockMatches $ blocksAssigning f :: [ConditionalBlock]
           where
-            blocksAssigning f = filter (any ((==f).fst) . snd) $ rconditionalblocks rules
+            blocksAssigning :: JournalFieldName -> [ConditionalBlock]
+            blocksAssigning f = filter (any ((==f).fst) . fromLeft . snd) $ filter (Data.Either.isLeft . snd) $ rconditionalblocks rules
+              where
+                fromLeft (Left a) = a
+                fromLeft _        = error "fromLeft in CsvReader.hs" -- shouldn't happen
             blockMatches :: ConditionalBlock -> Bool
             blockMatches (matchers,_) = all matcherMatches matchers
               where
