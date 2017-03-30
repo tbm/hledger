@@ -5,6 +5,9 @@
 # https://raw.githubusercontent.com/commercialhaskell/stack/master/doc/travis-simple.yml
 # https://raw.githubusercontent.com/commercialhaskell/stack/master/doc/travis-complex.yml
 # https://github.com/hvr/multi-ghc-travis#user-content-travisyml-template-for-non-container-based-infrastructure
+# https://docs.travis-ci.com/user/common-build-problems/#Build-times-out-because-no-output-was-received
+# https://github.com/koterpillar/tianbar/blob/master/Dockerfile.base - custom docker image to save time
+# https://github.com/mapnik/mapnik/blob/master/.travis.yml
 #
 # The Build Lifecycle #
 # A build on Travis CI is made up of two steps:
@@ -78,9 +81,9 @@ install: # completed commands' output is collapsed in log
   - stack exec -- ghc --version
 
   # hledger dependencies, or at least some of them, built separately to reduce memory usage
-  - stack build --only-dependencies hledger-lib #hledger hledger-ui # --test
+  # - stack build --only-dependencies hledger-lib #hledger hledger-ui # --test
     # TODO does this build hledger-lib & hledger, then rebuild them later with -Werror ?
-  - stack build cryptohash
+  # - stack build cryptohash
   # - stack build --only-dependencies hledger-web # --test
   # - stack build --only-dependencies hledger-api # --test
 
@@ -95,7 +98,7 @@ install: # completed commands' output is collapsed in log
 
 script:  # all commands' output is shown in log, all commands must succeed for travis success
 
-  # just build hledger packages, warning free, separately to reduce memory
+  # build hledger packages, ensuring no warnings, and any deps not already cached, separately to reduce memory
   - stack build --ghc-options=-Werror hledger-lib
   - stack build --ghc-options=-Werror hledger
   - stack build --ghc-options=-Werror hledger-ui
@@ -104,6 +107,13 @@ script:  # all commands' output is shown in log, all commands must succeed for t
 
   # run functional tests, skipping the ones for addons
   - COLUMNS=80 stack exec -- shelltest --execdir -j16 tests -x /bin -x /addons
+
+  # we limit the `make` to 40 min
+  # to ensure that slow builds still upload their
+  # cache results and therefore should be faster
+  # (and might work) for the next build
+  # - DURATION=2400
+  # - scripts/travis-command-wrapper.py -s "date" -i 120 --deadline=$(( $(date +%s) + ${DURATION} )) make
 
   # build hledger packages, ensuring no warnings, no haddock failures, package test suites passing 
   #- stack build --ghc-options=-Werror --test --haddock --no-haddock-deps hledger-lib hledger hledger-ui
