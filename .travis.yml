@@ -69,9 +69,8 @@ install: # completed commands' output is collapsed in log
 
   # stack
   - mkdir -p ~/.local/bin
-  - travis_retry curl -L https://www.stackage.org/stack/linux-x86_64 | tar xz --wildcards --strip-components=1 -C ~/.local/bin '*/stack'
-  - chmod a+x ~/.local/bin/stack
   - export PATH=~/.local/bin:$PATH
+  - if [[ ! -x ~/.local/bin/stack ]]; then travis_retry curl -L https://www.stackage.org/stack/linux-x86_64 | tar xz --wildcards --strip-components=1 -C ~/.local/bin '*/stack'; chmod a+x ~/.local/bin/stack; fi
   - stack --version
 
   # GHC
@@ -79,8 +78,12 @@ install: # completed commands' output is collapsed in log
   - stack exec -- ghc --version
 
   # hledger dependencies, or at least some of them
-  - stack build --only-dependencies hledger-lib #hledger hledger-ui #hledger-web hledger-api # --test
+  - stack build --only-dependencies hledger-lib #hledger hledger-ui # --test
     # TODO does this build hledger-lib & hledger, then rebuild them later with -Werror ?
+  # problematic big deps built separately to avoid running out of memory
+  - travis_wait stack build cryptohash
+  # - stack build --only-dependencies hledger-web # --test
+  # - stack build --only-dependencies hledger-api # --test
 
   # hledger addon dependencies
   #- stack build Chart Chart-diagrams colour Diff here
@@ -93,17 +96,22 @@ install: # completed commands' output is collapsed in log
 
 script:  # all commands' output is shown in log, all commands must succeed for travis success
 
+  # build hledger packages, quickly 
+  - stack build --ghc-options=-Werror hledger-lib hledger hledger-ui
+  - stack build --ghc-options=-Werror hledger-web
+  # - stack build --ghc-options=-Werror hledger-api
+
+  # run functional tests, skipping the ones for addons
+  - COLUMNS=80 stack exec -- shelltest --execdir -j16 tests --exclude tests/bin
+
   # build hledger packages, ensuring no warnings, no haddock failures, package test suites passing 
-  #- stack build --ghc-options=-Werror --test --haddock --no-haddock-deps hledger-lib hledger hledger-ui #hledger-web hledger-api
+  #- stack build --ghc-options=-Werror --test --haddock --no-haddock-deps hledger-lib hledger hledger-ui
+  #- stack build --ghc-options=-Werror --test --haddock --no-haddock-deps hledger-web
+  #- stack build --ghc-options=-Werror --test --haddock --no-haddock-deps hledger-api
   # build hledger addons, ensuring no warnings
   #- sh -e bin/compile.sh
   # run functional tests
   #- make functest
-  
-  # build hledger packages, quickly 
-  - stack build --ghc-options=-Werror hledger-lib hledger hledger-ui hledger-web hledger-api
-  # run functional tests, skipping the ones for addons
-  - COLUMNS=80 stack exec -- shelltest --execdir -j16 tests --exclude tests/bin
 
 #after_script:
 #
