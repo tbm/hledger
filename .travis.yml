@@ -77,11 +77,10 @@ install: # completed commands' output is collapsed in log
   - stack setup
   - stack exec -- ghc --version
 
-  # hledger dependencies, or at least some of them
+  # hledger dependencies, or at least some of them, built separately to reduce memory usage
   - stack build --only-dependencies hledger-lib #hledger hledger-ui # --test
     # TODO does this build hledger-lib & hledger, then rebuild them later with -Werror ?
-  # problematic big deps built separately to avoid running out of memory
-  - travis_wait stack build cryptohash
+  - stack build cryptohash
   # - stack build --only-dependencies hledger-web # --test
   # - stack build --only-dependencies hledger-api # --test
 
@@ -96,13 +95,15 @@ install: # completed commands' output is collapsed in log
 
 script:  # all commands' output is shown in log, all commands must succeed for travis success
 
-  # build hledger packages, quickly 
-  - stack build --ghc-options=-Werror hledger-lib hledger hledger-ui
+  # just build hledger packages, warning free, separately to reduce memory
+  - stack build --ghc-options=-Werror hledger-lib
+  - stack build --ghc-options=-Werror hledger
+  - stack build --ghc-options=-Werror hledger-ui
   - stack build --ghc-options=-Werror hledger-web
-  # - stack build --ghc-options=-Werror hledger-api
+  - stack build --ghc-options=-Werror hledger-api
 
   # run functional tests, skipping the ones for addons
-  - COLUMNS=80 stack exec -- shelltest --execdir -j16 tests --exclude tests/bin
+  - COLUMNS=80 stack exec -- shelltest --execdir -j16 tests -x /bin -x /addons
 
   # build hledger packages, ensuring no warnings, no haddock failures, package test suites passing 
   #- stack build --ghc-options=-Werror --test --haddock --no-haddock-deps hledger-lib hledger hledger-ui
