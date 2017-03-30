@@ -94,7 +94,7 @@ install: # completed commands' output is collapsed in log
 script:  # all commands' output is shown in log, all commands must succeed for travis success
 
   # build hledger packages, quickly 
-  - stack build --ghc-options=-Werror hledger-lib hledger hledger-ui hledger-web hledger-api
+  - stack build --ghc-options=-Werror hledger-lib hledger hledger-ui #hledger-web hledger-api
 
   # build hledger packages, ensuring no warnings, no haddock failures, package test suites passing 
   #- stack build --ghc-options=-Werror --test --haddock --no-haddock-deps hledger-lib hledger hledger-ui #hledger-web hledger-api
