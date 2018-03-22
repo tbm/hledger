@@ -237,7 +237,11 @@ Currently, empty cells show 0.
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Hledger.Cli.Commands.Balance (
-  balancemode
+  ActualAmount,
+  BudgetAmount,
+  ActualAmountsReport,
+  BudgetAmountsReport
+ ,balancemode
  ,balance
  ,balanceReportAsText
  ,balanceReportItemAsText
@@ -246,7 +250,11 @@ module Hledger.Cli.Commands.Balance (
  ,multiBalanceReportAsHtml
  ,multiBalanceReportHtmlRows
  ,renderBalanceReportTable
+ ,renderBudgetReportTable
  ,balanceReportAsTable
+ ,budgetJournal
+ ,budgetRollUp
+ ,addBudgetAmounts
  ,tests_Hledger_Cli_Commands_Balance
 ) where
 
@@ -269,6 +277,15 @@ import Hledger
 import Hledger.Cli.CliOptions
 import Hledger.Cli.Utils
 
+
+type ActualAmount = MixedAmount
+type BudgetAmount = MixedAmount
+type ActualAmountsReport = MultiBalanceReport
+type BudgetAmountsReport = MultiBalanceReport
+type ActualAmountsTable = Table String String MixedAmount
+type BudgetAmountsTable = Table String String MixedAmount
+type ActualAndBudgetAmountsTable = Table String String (MixedAmount, Maybe MixedAmount)
+type Percentage = Decimal
 
 -- | Command line options for this command.
 balancemode = (defCommandMode $ ["balance"] ++ aliases) { -- also accept but don't show the common bal alias
@@ -329,15 +346,15 @@ balance opts@CliOpts{rawopts_=rawopts,reportopts_=ropts} j = do
           
         _ | boolopt "budget" rawopts -> do
           -- multi column budget report
-          let budget = budgetJournal opts j
-              j' = budgetRollUp opts budget j
-              report = multiBalanceReport ropts (queryFromOpts d ropts) j'
-              budgetReport = multiBalanceReport ropts (queryFromOpts d ropts) budget
+          let budgetj = budgetJournal opts j
+              j'      = budgetRollUp opts budgetj j
+              r       = multiBalanceReport ropts (queryFromOpts d ropts) j'
+              budgetr = multiBalanceReport ropts (queryFromOpts d ropts) budgetj
               render = case format of
                 "csv"  -> const $ error' "Sorry, CSV output is not yet implemented for this kind of report."  -- TODO
                 "html" -> const $ error' "Sorry, HTML output is not yet implemented for this kind of report."  -- TODO
-                _     -> multiBalanceReportWithBudgetAsText ropts budgetReport
-          writeOutput opts $ render report
+                _     -> multiBalanceReportWithBudgetAsText ropts budgetr
+          writeOutput opts $ render r
           
           | otherwise -> do
           -- multi column balance report
@@ -639,15 +656,6 @@ multiBalanceReportAsText opts r =
         CumulativeChange -> "Ending balances (cumulative)"
         HistoricalBalance -> "Ending balances (historical)"
 
-type ActualAmount = MixedAmount
-type BudgetAmount = MixedAmount
-type ActualAmountsReport = MultiBalanceReport
-type BudgetAmountsReport = MultiBalanceReport
-type ActualAmountsTable = Table String String MixedAmount
-type BudgetAmountsTable = Table String String MixedAmount
-type ActualAndBudgetAmountsTable = Table String String (MixedAmount, Maybe MixedAmount)
-type Percentage = Decimal
-
 -- | Given two multi-column balance reports, the first representing a budget 
 -- (target change amounts) and the second representing actual change amounts, 
 -- render a budget report as plain text suitable for console output.
@@ -664,7 +672,7 @@ multiBalanceReportWithBudgetAsText opts budgetr actualr =
         HistoricalBalance -> "Ending balances (historical)"
 
     actualandbudgetamts :: ActualAndBudgetAmountsTable
-    actualandbudgetamts = combine (balanceReportAsTable opts actualr) (balanceReportAsTable opts budgetr)
+    actualandbudgetamts = addBudgetAmounts (balanceReportAsTable opts actualr) (balanceReportAsTable opts budgetr)
 
     showcell :: (ActualAmount, Maybe BudgetAmount) -> String
     showcell (actual, mbudget) =
@@ -700,29 +708,29 @@ multiBalanceReportWithBudgetAsText opts budgetr actualr =
     showamt | color_ opts  = cshowMixedAmountOneLineWithoutPrice
             | otherwise    = showMixedAmountOneLineWithoutPrice
 
-    -- Combine a table of actual amounts and a table of budgeted amounts into  
-    -- a single table of (actualamount, Maybe budgetamount) tuples. 
-    -- The budget table's row/column titles should be a subset of the actual table's.
-    -- (This is satisfied by the construction of the budget report and the
-    -- process of rolling up account names.)
-    combine :: ActualAmountsTable -> BudgetAmountsTable -> ActualAndBudgetAmountsTable
-    combine (Table l t d) (Table l' t' d') = Table l t combinedRows
-      where
-        -- For all accounts that are present in the budget, zip actual amounts with budget amounts
-        combinedRows = [ combineRow row budgetRow
-                       | (acct, row) <- zip (headerContents l) d
-                       , let budgetRow =
-                               if acct == "" then [] -- "" is totals row
-                               else fromMaybe [] $ Map.lookup acct budgetAccts
-                       ]
-        -- Budget could cover smaller interval of time than the whole journal.
-        -- Headers for budget row will always be a sublist of headers of row
-        combineRow r br =
-          let reportRow = zip (headerContents t) r
-              budgetRow = Map.fromList $ zip (headerContents t') br
-              findBudgetVal hdr = Map.lookup hdr budgetRow
-          in map (\(hdr, val) -> (val, findBudgetVal hdr)) reportRow
-        budgetAccts = Map.fromList $ zip (headerContents l') d'
+-- Combine a table of actual amounts and a table of budgeted amounts into  
+-- a single table of (actualamount, Maybe budgetamount) tuples. 
+-- The budget table's row/column titles should be a subset of the actual table's.
+-- (This is satisfied by the construction of the budget report and the
+-- process of rolling up account names.)
+addBudgetAmounts :: ActualAmountsTable -> BudgetAmountsTable -> ActualAndBudgetAmountsTable
+addBudgetAmounts (Table l t d) (Table l' t' d') = Table l t combinedRows
+  where
+    -- For all accounts that are present in the budget, zip actual amounts with budget amounts
+    combinedRows = [ combineRow row budgetRow
+                   | (acct, row) <- zip (headerContents l) d
+                   , let budgetRow =
+                           if acct == "" then [] -- "" is totals row
+                           else fromMaybe [] $ Map.lookup acct budgetAccts
+                   ]
+    -- Budget could cover smaller interval of time than the whole journal.
+    -- Headers for budget row will always be a sublist of headers of row
+    combineRow r br =
+      let reportRow = zip (headerContents t) r
+          budgetRow = Map.fromList $ zip (headerContents t') br
+          findBudgetVal hdr = Map.lookup hdr budgetRow
+      in map (\(hdr, val) -> (val, findBudgetVal hdr)) reportRow
+    budgetAccts = Map.fromList $ zip (headerContents l') d'
 
 -- | Given a table representing a multi-column balance report (for example,
 -- made using 'balanceReportAsTable'), render it in a format suitable for
@@ -747,6 +755,9 @@ renderBalanceReportTable' (ReportOpts { pretty_tables_ = pretty}) showamt =
       where
         acctswidth = maximum' $ map strWidth (headerContents l)
         l'         = padRightWide acctswidth <$> l
+
+renderBudgetReportTable :: ReportOpts -> Table String String (ActualAmount, Maybe BudgetAmount) -> String
+renderBudgetReportTable ropts = undefined
 
 -- | Build a 'Table' from a multi-column balance report.
 balanceReportAsTable :: ReportOpts -> MultiBalanceReport -> Table String String MixedAmount

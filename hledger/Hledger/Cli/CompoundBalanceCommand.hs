@@ -75,7 +75,7 @@ data CBCSubreportSpec = CBCSubreportSpec {
 type CompoundBalanceReport = 
   ( String
   , [DateSpan]
-  , [(String, MultiBalanceReport, Bool)]
+  , [(String, ActualAmountsReport, BudgetAmountsReport, Bool)]
   , ([MixedAmount], MixedAmount, MixedAmount)
   )
 
@@ -107,7 +107,15 @@ compoundBalanceCommandMode CompoundBalanceCommandSpec{..} = (defCommandMode $ cb
      ,flagReq  ["format"] (\s opts -> Right $ setopt "format" s opts) "FORMATSTR" "use this custom line format (in simple reports)"
      ,flagNone ["pretty-tables"] (\opts -> setboolopt "pretty-tables" opts) "use unicode when displaying tables"
      ,flagNone ["sort-amount","S"] (\opts -> setboolopt "sort-amount" opts) "sort by amount instead of account code/name"
-     ,outputFormatFlag
+     ]
+     ++
+     -- only reports showing changes support --budget
+     if cbctype == PeriodChange then
+     [flagNone ["budget"] (setboolopt "budget") "show performance compared to budget goals defined by periodic transactions"
+     ,flagNone ["show-unbudgeted"] (setboolopt "show-unbudgeted") "with --budget, show unbudgeted accounts also"
+     ] else []
+     ++
+     [outputFormatFlag
      ,outputFileFlag
      ]
     ,groupHidden = []
@@ -155,20 +163,25 @@ compoundBalanceCommand CompoundBalanceCommandSpec{..} opts@CliOpts{reportopts_=r
             = ropts{balancetype_=balancetype}
       userq = queryFromOpts d ropts'
       format = outputFormatFromOpts opts
+      budgetj = budgetJournal opts j
+      j' | boolopt "budget" rawopts = budgetRollUp opts budgetj j
+         | otherwise                = j
 
       -- make a CompoundBalanceReport
       subreports = 
         map (\CBCSubreportSpec{..} -> 
                 (cbcsubreporttitle
                 ,mbrNormaliseSign cbcsubreportnormalsign $ -- <- convert normal-negative to normal-positive
-                  compoundBalanceSubreport ropts' userq j cbcsubreportquery cbcsubreportnormalsign
+                  compoundBalanceSubreport ropts' userq j' cbcsubreportquery cbcsubreportnormalsign
                                                                          -- ^ allow correct amount sorting
+                ,mbrNormaliseSign cbcsubreportnormalsign $ -- duplicates the above, for the budget amounts
+                  compoundBalanceSubreport ropts' userq budgetj cbcsubreportquery cbcsubreportnormalsign
                 ,cbcsubreportincreasestotal
                 ))
             cbcqueries
       subtotalrows = 
         [(coltotals, increasesoveralltotal) 
-        | (_, MultiBalanceReport (_,_,(coltotals,_,_)), increasesoveralltotal) <- subreports
+        | (_, MultiBalanceReport (_,_,(coltotals,_,_)), _, increasesoveralltotal) <- subreports
         ]
       -- Sum the subreport totals by column. Handle these cases:
       -- - no subreports
@@ -193,7 +206,7 @@ compoundBalanceCommand CompoundBalanceCommandSpec{..} opts@CliOpts{reportopts_=r
             (coltotals, grandtotal, grandavg)
       colspans =
         case subreports of
-          (_, MultiBalanceReport (ds,_,_), _):_ -> ds
+          (_, MultiBalanceReport (ds,_,_), _, _):_ -> ds
           [] -> []
       cbr =
         (title
@@ -204,10 +217,17 @@ compoundBalanceCommand CompoundBalanceCommandSpec{..} opts@CliOpts{reportopts_=r
 
     -- render appropriately
     writeOutput opts $
-      case format of
-        "csv"  -> printCSV (compoundBalanceReportAsCsv ropts cbr) ++ "\n"
-        "html" -> (++ "\n") $ TL.unpack $ L.renderText $ compoundBalanceReportAsHtml ropts cbr
-        _      -> compoundBalanceReportAsText ropts' cbr
+      if boolopt "budget" rawopts
+      then
+        case format of
+          "csv"  -> printCSV (compoundBalanceReportWithBudgetAsCsv ropts cbr) ++ "\n"
+          "html" -> (++ "\n") $ TL.unpack $ L.renderText $ compoundBalanceReportWithBudgetAsHtml ropts cbr
+          _      -> compoundBalanceReportWithBudgetAsText ropts' cbr
+      else
+        case format of
+          "csv"  -> printCSV (compoundBalanceReportAsCsv ropts cbr) ++ "\n"
+          "html" -> (++ "\n") $ TL.unpack $ L.renderText $ compoundBalanceReportAsHtml ropts cbr
+          _      -> compoundBalanceReportAsText ropts' cbr
 
 -- | Run one subreport for a compound balance command in multi-column mode.
 -- This returns a MultiBalanceReport.
@@ -249,8 +269,21 @@ Balance Sheet
 -}
 compoundBalanceReportAsText :: ReportOpts -> CompoundBalanceReport -> String
 compoundBalanceReportAsText ropts (title, _colspans, subreports, (coltotals, grandtotal, grandavg)) =
-  title ++ "\n\n" ++ 
-  renderBalanceReportTable ropts bigtable'
+  title ++ "\n\n" ++ renderBudgetReportTable ropts (compoundBalanceReportTable ropts subreports coltotals grandtotal grandavg)
+
+compoundBalanceReportWithBudgetAsText :: ReportOpts -> CompoundBalanceReport -> String
+compoundBalanceReportWithBudgetAsText ropts (title, _colspans, subreports, (coltotals, grandtotal, grandavg)) =
+  undefined
+  -- title ++ "\n\n" ++ renderBudgetReportTable ropts (compoundBalanceReportTable ropts subreports coltotals grandtotal grandavg)
+
+compoundBalanceReportTable
+  :: ReportOpts
+  -> [(String, ActualAmountsReport, BudgetAmountsReport, d)]
+  -> [(MixedAmount, Maybe MixedAmount)]
+  -> (MixedAmount, Maybe MixedAmount)
+  -> (MixedAmount, Maybe MixedAmount)
+  -> Table String String (ActualAmount, Maybe BudgetAmount)
+compoundBalanceReportTable ropts subreports coltotals grandtotal grandavg = bigtable'
   where
     singlesubreport = length subreports == 1
     bigtable = 
@@ -271,13 +304,14 @@ compoundBalanceReportAsText ropts (title, _colspans, subreports, (coltotals, gra
 
     -- | Convert a named multi balance report to a table suitable for
     -- concatenating with others to make a compound balance report table.
-    subreportAsTable ropts singlesubreport (title, r, _) = t
+    subreportAsTable ropts singlesubreport (title, r, budgetr, _) = t
       where
         -- unless there's only one section, always show the subtotal row
         ropts' | singlesubreport = ropts
                | otherwise       = ropts{ no_total_=False }
         -- convert to table
-        Table lefthdrs tophdrs cells = balanceReportAsTable ropts' r
+        Table lefthdrs tophdrs cells =
+          addBudgetAmounts (balanceReportAsTable ropts r) (balanceReportAsTable ropts budgetr)
         -- tweak the layout
         t = Table (T.Group SingleLine [Header title, lefthdrs]) tophdrs ([]:cells)
 
@@ -302,7 +336,7 @@ compoundBalanceReportAsCsv ropts (title, colspans, subreports, (coltotals, grand
   where
     singlesubreport = length subreports == 1
     -- | Add a subreport title row and drop the heading row.
-    subreportAsCsv ropts singlesubreport (subreporttitle, multibalreport, _) =
+    subreportAsCsv ropts singlesubreport (subreporttitle, multibalreport, _, _) =
       padRow subreporttitle :
       tail (multiBalanceReportAsCsv ropts' multibalreport)
       where
@@ -319,7 +353,7 @@ compoundBalanceReportAsCsv ropts (title, colspans, subreports, (coltotals, grand
             (if average_ ropts then (1+) else id) $
             maximum $ -- depends on non-null subreports
             map (\(MultiBalanceReport (amtcolheadings, _, _)) -> length amtcolheadings) $ 
-            map second3 subreports
+            map second4 subreports
     addtotals
       | no_total_ ropts || length subreports == 1 = id
       | otherwise = (++ 
@@ -330,6 +364,10 @@ compoundBalanceReportAsCsv ropts (title, colspans, subreports, (coltotals, grand
              ++ (if average_ ropts   then [grandavg]   else [])
              )
           ])
+
+compoundBalanceReportWithBudgetAsCsv :: ReportOpts -> CompoundBalanceReport -> CSV
+compoundBalanceReportWithBudgetAsCsv _ropts  _ = -- (title, colspans, subreports, (coltotals, grandtotal, grandavg)) =
+  error' "Sorry, --budget is not yet supported for this output format" 
 
 -- | Render a compound balance report as HTML.
 compoundBalanceReportAsHtml :: ReportOpts -> CompoundBalanceReport -> Html ()
@@ -355,8 +393,8 @@ compoundBalanceReportAsHtml ropts cbr =
     
     -- Make rows for a subreport: its title row, not the headings row,
     -- the data rows, any totals row, and a blank row for whitespace.
-    subreportrows :: (String, MultiBalanceReport, Bool) -> [Html ()]
-    subreportrows (subreporttitle, mbr, _increasestotal) =
+    subreportrows :: (String, ActualAmountsReport, BudgetAmountsReport, Bool) -> [Html ()]
+    subreportrows (subreporttitle, mbr, _, _increasestotal) =
       let
         (_,bodyrows,mtotalsrow) = multiBalanceReportHtmlRows ropts mbr
       in
@@ -388,4 +426,8 @@ compoundBalanceReportAsHtml ropts cbr =
       ++ [blankrow]
       ++ concatMap subreportrows subreports
       ++ totalrows
+
+compoundBalanceReportWithBudgetAsHtml :: ReportOpts -> CompoundBalanceReport -> Html ()
+compoundBalanceReportWithBudgetAsHtml _ropts _cbr = -- (title, colspans, subreports, (coltotals, grandtotal, grandavg)) =
+  error' "Sorry, --budget is not yet supported for this output format" 
 
