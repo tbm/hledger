@@ -330,15 +330,15 @@ balance opts@CliOpts{rawopts_=rawopts,reportopts_=ropts} j = do
         _ | boolopt "budget" rawopts -> do
           -- multi column budget report
           reportspan <- reportSpan j ropts
-          let budget = budgetJournal opts reportspan j
-              j' = budgetRollUp opts budget j
-              report       = dbg1 "report"       $ multiBalanceReport ropts (queryFromOpts d ropts) j'
-              budgetReport = dbg1 "budgetreport" $ multiBalanceReport ropts (queryFromOpts d ropts) budget
+          let budgetj = budgetJournal opts reportspan j
+              budgetgoalreport = dbg1 "budgetgoalreport" $ multiBalanceReport ropts (queryFromOpts d ropts) budgetj
+              actualreport     = dbg1 "actualreport"     $ multiBalanceReport ropts (queryFromOpts d ropts) $ budgetRollUp opts budgetj j
+              budgetperfreport = dbg1 "budgetperfreport" $ budgetPerformanceReport ropts budgetgoalreport actualreport
               render = case format of
                 "csv"  -> const $ error' "Sorry, CSV output is not yet implemented for this kind of report."  -- TODO
                 "html" -> const $ error' "Sorry, HTML output is not yet implemented for this kind of report."  -- TODO
-                _     -> multiBalanceReportWithBudgetAsText ropts budgetReport
-          writeOutput opts $ render report
+                _     -> undefined -- multiBalanceReportWithBudgetAsText ropts budgetReport
+          writeOutput opts $ render budgetperfreport
           
           | otherwise -> do
           -- multi column balance report
@@ -348,6 +348,23 @@ balance opts@CliOpts{rawopts_=rawopts,reportopts_=ropts} j = do
                 "html" ->  (++ "\n") . TL.unpack . L.renderText . multiBalanceReportAsHtml ropts
                 _      -> multiBalanceReportAsText ropts
           writeOutput opts $ render report
+
+-- Combine a per-account-and-subperiod report of budget goals, and one
+-- of the corresponding actual amounts, into a budget performance
+-- report.  The two reports need not have exactly the same account
+-- rows or date columns, but should have the same report interval.
+-- Cells in the combined report can be missing a budget goal, an
+-- actual amount, or both. The combined report will include:
+--
+-- - all budgeted and actual accounts, sorted by account
+--   code/name/amount as appropriate
+--
+-- - consecutive subperiods, at the same interval as the two reports,
+--   spanning the period of both reports.
+--
+budgetPerformanceReport :: ReportOpts -> MultiBalanceReport -> MultiBalanceReport -> MultiBalanceReport
+budgetPerformanceReport ropts budgetgoalreport actualreport =
+  undefined
 
 -- | Re-map account names to closest parent with periodic transaction from budget.
 -- Accounts that don't have suitable parent are either remapped to "<unbudgeted>:topAccount" 
