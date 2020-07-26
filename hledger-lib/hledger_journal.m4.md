@@ -339,7 +339,7 @@ A posting is an addition of some amount to, or removal of some amount from, an a
 Each posting line begins with at least one space or tab (2 or 4 spaces is common), followed by:
 
 - (optional) a [status](#status) character (empty, `!`, or `*`), followed by a space
-- (required) an [account name](#account-names) (any text, optionally containing **single spaces**, until end of line or a double space)
+- (required) an [account name](#account-names) (any text, optionally containing **single spaces**, until end of line, a double space or a tab)
 - (optional) **two or more spaces** or tabs followed by an [amount](#amounts).
 
 Positive amounts are being added to the account, negative amounts are being removed.
@@ -401,7 +401,8 @@ Account names can be [aliased](#rewriting-accounts).
 ## Amounts
 
 After the account name, there is usually an amount.
-(Important: between account name and amount, there must be **two or more spaces**.)
+(Important: between account name and amount, there must be **two or more spaces**
+or a tab.)
 
 hledger's amount format is flexible, supporting several international formats.
 Here are some examples.
